@@ -961,6 +961,7 @@ function openPlayer() {
 	if (!current) return;
 	$("player").hidden = false;
 	$("library").hidden = true;
+	document.body.classList.add("in-player");
 	$("mini").hidden = true;
 	window.scrollTo(0, 0);
 	if (history.state?.view !== "player") history.pushState({ view: "player" }, "");
@@ -972,6 +973,7 @@ function closePlayer(fromHistory = false) {
 	closeSheet();
 	$("player").hidden = true;
 	$("library").hidden = false;
+	document.body.classList.remove("in-player");
 	renderLibrary();
 	updateMini();
 	if (!fromHistory && history.state?.view === "player") history.back();
@@ -1043,7 +1045,21 @@ function updateSpeedUi() {
 	$("speed-btn").classList.toggle("on", s !== 1);
 }
 
+// Фон приложения — размытая обложка текущей книги
+function updateAmbient() {
+	const img = $("ambient-img");
+	if (!current) {
+		img.removeAttribute("data-cover");
+		img.src = "";
+		return;
+	}
+	if (img.dataset.cover === (current.cover?.url || current.title)) return;
+	setCover(img, current);
+	img.dataset.cover = current.cover?.url || current.title;
+}
+
 function updateMini() {
+	updateAmbient();
 	const show = !!current && $("player").hidden && $("login").hidden;
 	$("mini").hidden = !show;
 	if (!current) return;

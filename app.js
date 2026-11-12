@@ -1354,6 +1354,24 @@ function restoreLast() {
 	if (last && isPlayable(last)) loadBook(last, false).catch(console.error);
 }
 
+// iOS-приложение «на экране Домой» (статус-бар black-translucent) отдаёт странице высоту экрана
+// без верхней системной зоны и не рисует полосу внизу. Меряем недостающую высоту и растягиваем
+// фиксированные слои на неё (--vgap). В браузере и на компьютере разница = 0.
+function fixStandaloneViewport() {
+	let gap = 0;
+	const standalone = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+	if (standalone && screen?.height) {
+		const portrait = innerHeight >= innerWidth;
+		const screenH = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+		gap = Math.round(screenH - innerHeight);
+		if (gap < 0 || gap > 120) gap = 0;
+	}
+	document.documentElement.style.setProperty("--vgap", gap + "px");
+}
+fixStandaloneViewport();
+window.addEventListener("resize", fixStandaloneViewport);
+window.addEventListener("orientationchange", () => setTimeout(fixStandaloneViewport, 300));
+
 async function init() {
 	updatePlayUi();
 	updateNetStatus();

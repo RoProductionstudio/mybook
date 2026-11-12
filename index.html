@@ -9,12 +9,13 @@
 	<meta name="theme-color" content="#08090d" />
 	<meta name="apple-mobile-web-app-capable" content="yes" />
 	<meta name="mobile-web-app-capable" content="yes" />
-	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+	<!-- black, а не black-translucent: в iOS 26.0 прозрачный статус-бар оставляет неотрисованную полосу внизу -->
+	<meta name="apple-mobile-web-app-status-bar-style" content="black" />
 	<meta name="apple-mobile-web-app-title" content="My Book" />
 	<link rel="manifest" href="./manifest.webmanifest" />
 	<link rel="icon" href="./icon.svg" type="image/svg+xml" />
 	<link rel="apple-touch-icon" href="./icon-180.png" />
-	<link rel="stylesheet" href="./styles.css?v=8" />
+	<link rel="stylesheet" href="./styles.css?v=9" />
 </head>
 <body>
 	<div class="ambient" aria-hidden="true"><img id="ambient-img" alt="" src="" /></div>
@@ -142,6 +143,6 @@
 
 	<audio id="audio" preload="auto"></audio>
 
-	<script type="module" src="./app.js?v=8"></script>
+	<script type="module" src="./app.js?v=9"></script>
 </body>
 </html>

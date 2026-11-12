@@ -415,10 +415,3 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 0; bo
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
 	.book, .mini, .cloud, .sheet, .tools, .opt, .chapter-btn { background: rgba(30, 32, 42, 0.92); }
 }
-
-/* iOS standalone: растягиваем фиксированные слои на недостающую снизу высоту (см. fixStandaloneViewport) */
-:root { --vgap: 0px; }
-.ambient, .player, .sheet-backdrop { bottom: calc(-1 * var(--vgap)); }
-.sheet { bottom: calc(-1 * var(--vgap)); }
-.mini { bottom: calc(12px + var(--safe-b) - var(--vgap)); }
-.view:not(.player) { padding-bottom: calc(116px + var(--safe-b) + var(--vgap)); }

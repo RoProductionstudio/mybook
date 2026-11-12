@@ -4,7 +4,7 @@
 // между устройствами. Книгу можно скачать на устройство (IndexedDB) и слушать без интернета.
 
 import { readTags } from "./tags.js";
-import { upload } from "./vendor/blob-client.js";
+import { uploadPresigned } from "./vendor/blob-client.js";
 
 const SKIP_BACK = 15;
 const SKIP_FWD = 30;
@@ -187,15 +187,23 @@ async function api(method, body, { keepalive = false } = {}) {
 }
 
 async function uploadFile(pathname, blob, contentType, onProgress) {
-	const res = await upload(pathname, blob, {
+	const opts = (multipart) => ({
 		access: "private",
 		handleUploadUrl: "/api/upload",
 		headers: { "x-mybook-password": password },
 		contentType,
-		multipart: blob.size > MULTIPART_FROM,
+		multipart,
 		onUploadProgress: onProgress ? ({ loaded }) => onProgress(loaded) : undefined,
 	});
-	return res.url;
+	if (blob.size > MULTIPART_FROM) {
+		// большие файлы — частями (с повтором неудачных частей); если не вышло — одним запросом
+		try {
+			return (await uploadPresigned(pathname, blob, opts(true))).url;
+		} catch (e) {
+			console.warn("multipart upload failed, retrying as single upload", e);
+		}
+	}
+	return (await uploadPresigned(pathname, blob, opts(false))).url;
 }
 
 /* ======================= State ======================= */

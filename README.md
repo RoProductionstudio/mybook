@@ -9,8 +9,8 @@
 ## Как устроено
 
 - **Файлы** (аудио, обложки, метаданные, место прослушивания) хранятся в **Vercel Blob**.
-  Браузер загружает аудио напрямую в Blob (`api/upload.js` только выдаёт токен), поэтому размер
-  файла не ограничен лимитом функций.
+  Браузер загружает аудио напрямую в Blob по подписанной ссылке (`api/upload.js` только выдаёт
+  её через `handleUploadPresigned`), поэтому размер файла не ограничен лимитом функций.
 - **`api/library.js`** — список книг (один запрос `list`), сохранение метаданных и места
   прослушивания, удаление книги.
 - **Доступ** — по паролю из переменной окружения `MYBOOK_PASSWORD`. Пароль вводится один раз
@@ -26,7 +26,9 @@
 ## Настройка в Vercel
 
 1. **Storage → Create Database → Blob** → создать хранилище с доступом **Private** и
-   подключить его к проекту `mybook` (переменная `BLOB_READ_WRITE_TOKEN` добавится сама).
+   подключить его к проекту `mybook` (Connect Project). Vercel сам добавит `BLOB_STORE_ID` и
+   `BLOB_WEBHOOK_PUBLIC_KEY`, доступ к хранилищу идёт через OIDC — ключ `BLOB_READ_WRITE_TOKEN`
+   не нужен.
 2. **Settings → Environment Variables** → добавить `MYBOOK_PASSWORD` (ваш пароль).
 3. **Deployments → … → Redeploy**, чтобы переменные подхватились.
 
@@ -44,10 +46,10 @@ Safari → адрес приложения → «Поделиться» → «Н
 
 ## Обновление встроенной библиотеки загрузки
 
-`vendor/blob-client.js` — функция `upload` из `@vercel/blob@2.8.2/client`, собранная esbuild:
+`vendor/blob-client.js` — функция `uploadPresigned` из `@vercel/blob@2.8.2/client`, собранная esbuild:
 
 ```sh
-echo "export { upload } from '@vercel/blob/client';" > entry.js
+echo "export { uploadPresigned } from '@vercel/blob/client';" > entry.js
 npx esbuild entry.js --bundle --format=esm --platform=browser --minify --target=es2020 \
   --outfile=vendor/blob-client.js --legal-comments=none \
   "--banner:js=var process=globalThis.process||{env:{}};"

@@ -11,7 +11,7 @@ export function json(data, status = 200) {
 export function checkAuth(request) {
 	const expected = process.env.MYBOOK_PASSWORD;
 	if (!expected) return json({ error: "no-password-configured" }, 500);
-	if (!process.env.BLOB_READ_WRITE_TOKEN) return json({ error: "no-blob-store" }, 500);
+	if (!process.env.BLOB_STORE_ID && !process.env.BLOB_READ_WRITE_TOKEN) return json({ error: "no-blob-store" }, 500);
 	const given = request.headers.get("x-mybook-password") || "";
 	const a = Buffer.from(given);
 	const b = Buffer.from(expected);

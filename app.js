@@ -188,7 +188,7 @@ async function api(method, body, { keepalive = false } = {}) {
 
 async function uploadFile(pathname, blob, contentType, onProgress) {
 	const res = await upload(pathname, blob, {
-		access: "public",
+		access: "private",
 		handleUploadUrl: "/api/upload",
 		headers: { "x-mybook-password": password },
 		contentType,
@@ -209,6 +209,7 @@ let sleep = { mode: 0, endsAt: 0 };
 let sleepTick = null;
 let seeking = false;
 let lastRefresh = 0;
+let retriedLinks = false;
 const pushTimers = new Map();
 const lastPush = new Map();
 const downloads = new Map(); // bookId -> { loaded, total, abort }
@@ -397,6 +398,7 @@ function sortBooks() {
 }
 
 const coverObjUrls = new Map();
+const BLANK_IMG = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 function coverSrc(b) {
 	if (!b.cover?.url) return placeholderCover(b.title);
 	if (coverObjUrls.has(b.cover.url)) return coverObjUrls.get(b.cover.url);
@@ -406,8 +408,10 @@ function coverSrc(b) {
 			coverObjUrls.set(b.cover.url, URL.createObjectURL(blob));
 			document.querySelectorAll(`img[data-cover="${CSS.escape(b.cover.url)}"]`).forEach((img) => (img.src = coverObjUrls.get(b.cover.url)));
 		});
+		return BLANK_IMG; // обложка уже на устройстве — подставится через мгновение
 	}
-	return b.cover.url;
+	if (!b.cover.src) return placeholderCover(b.title);
+	return b.cover.src || b.cover.url;
 }
 
 function setCover(img, b) {
@@ -544,7 +548,7 @@ async function downloadBook(b) {
 	if (!navigator.onLine) return alert("Для скачивания нужен интернет.");
 	navigator.storage?.persist?.().catch(() => {});
 	const ctrl = new AbortController();
-	const items = [...b.chapters.map((c) => ({ url: c.url, size: c.size || 0 })), ...(b.cover?.url ? [{ url: b.cover.url, size: 0 }] : [])].filter(
+	const items = [...b.chapters.map((c) => ({ url: c.url, src: c.src || c.url, size: c.size || 0 })), ...(b.cover?.url ? [{ url: b.cover.url, src: b.cover.src || b.cover.url, size: 0 }] : [])].filter(
 		(x) => !localFiles.has(x.url),
 	);
 	const state = { loaded: 0, total: items.reduce((s, x) => s + x.size, 0) || 1, abort: () => ctrl.abort() };
@@ -553,7 +557,7 @@ async function downloadBook(b) {
 	let lastUi = 0;
 	try {
 		for (const item of items) {
-			const res = await fetch(item.url, { signal: ctrl.signal });
+			const res = await fetch(item.src, { signal: ctrl.signal });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const reader = res.body.getReader();
 			const chunks = [];
@@ -671,7 +675,7 @@ async function setChapter(index, position = 0) {
 	if (!b) return;
 	index = Math.max(0, Math.min(b.chapters.length - 1, index));
 	const ch = b.chapters[index];
-	let src = ch.url;
+	let src = ch.src || ch.url;
 	if (localFiles.has(ch.url)) {
 		const blob = await getLocal(ch.url).catch(() => null);
 		if (blob) src = URL.createObjectURL(blob);
@@ -810,6 +814,7 @@ function stop() {
 /* ======================= Audio events ======================= */
 
 audio.addEventListener("loadedmetadata", () => {
+	retriedLinks = false;
 	if (!current) return;
 	if (pendingSeek != null) {
 		const t = Math.min(pendingSeek, Math.max(0, (audio.duration || Infinity) - 1));
@@ -870,6 +875,14 @@ audio.addEventListener("ended", async () => {
 audio.addEventListener("error", () => {
 	if (!audio.src || !current) return;
 	if (!currentUrl?.startsWith("blob:") && localFiles.has(current.chapters[current.chapterIndex].url)) return switchToLocal();
+	// подписанная ссылка могла истечь — обновим список и попробуем ещё раз
+	if (navigator.onLine && !currentUrl?.startsWith("blob:") && !retriedLinks) {
+		retriedLinks = true;
+		const b = current;
+		const pos = b.position;
+		refreshLibrary(true).then(() => current === b && setChapter(b.chapterIndex, pos));
+		return;
+	}
 	console.error("audio error", audio.error);
 	$("p-chapter").textContent = navigator.onLine ? "Не удалось воспроизвести файл" : "Нет интернета — скачайте книгу для офлайна";
 });

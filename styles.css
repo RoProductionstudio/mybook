@@ -251,3 +251,17 @@ input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; bo
 	height: min(100cqw, 100cqh, 440px);
 }
 .tools { padding-bottom: 4px; }
+
+/* ---------- v6: место в облаке ---------- */
+.cloud { background: var(--surface); border-radius: var(--radius); padding: 12px 14px; margin-top: 20px; font-size: 14px; }
+.cloud-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.cloud-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; }
+.cloud-label b { color: var(--text); font-weight: 600; white-space: nowrap; }
+.cloud-label svg { width: 18px; height: 18px; flex: none; }
+.cloud-free { color: var(--muted); white-space: nowrap; }
+.cloud .bar { height: 6px; margin-top: 10px; }
+.cloud.warn .bar > span { background: #f5c04a; }
+.cloud.warn .cloud-free { color: #f5c04a; }
+.cloud.full .bar > span { background: var(--danger); }
+.cloud.full .cloud-free { color: var(--danger); }
+.storage { margin-top: 10px; }

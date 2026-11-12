@@ -14,7 +14,7 @@
 	<link rel="manifest" href="./manifest.webmanifest" />
 	<link rel="icon" href="./icon.svg" type="image/svg+xml" />
 	<link rel="apple-touch-icon" href="./icon-180.png" />
-	<link rel="stylesheet" href="./styles.css?v=5" />
+	<link rel="stylesheet" href="./styles.css?v=6" />
 </head>
 <body>
 	<!-- LOGIN -->
@@ -53,6 +53,13 @@
 			<p>Библиотека пуста.<br />Нажмите «Добавить», чтобы загрузить аудиокнигу.</p>
 		</div>
 
+		<div class="cloud" id="cloud" hidden>
+			<div class="cloud-row">
+				<span class="cloud-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.34 9.1 5 5 0 0 0 7 19z"/></svg>Облако: <b id="cloud-text"></b></span>
+				<span id="cloud-free" class="cloud-free"></span>
+			</div>
+			<div class="bar"><span id="cloud-bar"></span></div>
+		</div>
 		<p class="storage" id="storage"></p>
 	</main>
 
@@ -133,6 +140,6 @@
 
 	<audio id="audio" preload="auto"></audio>
 
-	<script type="module" src="./app.js?v=3"></script>
+	<script type="module" src="./app.js?v=6"></script>
 </body>
 </html>

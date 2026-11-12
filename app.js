@@ -27,6 +27,7 @@ const MULTIPART_FROM = 50 * 1024 * 1024;
 const LS_PASS = "mybook:password";
 const LS_LIB = "mybook:library";
 const LS_LAST = "mybook:last";
+const LS_CLOUD = "mybook:cloud";
 const lsPosKey = (id) => `mybook:pos:${id}`;
 
 const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>';
@@ -69,7 +70,12 @@ function fmtLong(sec) {
 
 // «Автор(ы): Джеймс Клир» → «Джеймс Клир»
 const cleanAuthor = (a) => String(a || "").replace(/^\s*(автор\(ы\)|авторы|автор|author\(s\)|authors|author|читает)\s*:\s*/i, "").trim();
-const fmtMb = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(1) + " ГБ" : Math.max(1, Math.round(n / 1048576)) + " МБ");
+const fmtMb = (n) =>
+	n >= 1073741824 ? (n / 1073741824).toFixed(2).replace(/\.?0+$/, "") + " ГБ"
+	: n >= 10485760 ? Math.round(n / 1048576) + " МБ"
+	: n >= 1048576 ? (n / 1048576).toFixed(1) + " МБ"
+	: n > 0 ? Math.max(1, Math.round(n / 1024)) + " КБ"
+	: "0 МБ";
 
 const pluralChapters = (n) => {
 	const m10 = n % 10, m100 = n % 100;
@@ -265,7 +271,8 @@ async function refreshLibrary(force = false) {
 	lastRefresh = Date.now();
 	$("sync-btn").classList.add("spin");
 	try {
-		const { books: remote } = await api("GET");
+		const { books: remote, storage } = await api("GET");
+		if (storage) lsSet(LS_CLOUD, JSON.stringify({ ...storage, at: Date.now() }));
 		const prev = new Map(books.map((b) => [b.id, b]));
 		const next = [];
 		for (const r of remote) {
@@ -473,11 +480,32 @@ function renderLibrary() {
 	updateStorageInfo();
 }
 
+function cloudInfo() {
+	try {
+		return JSON.parse(lsGet(LS_CLOUD) || "null");
+	} catch {
+		return null;
+	}
+}
+
 async function updateStorageInfo() {
+	const cloud = cloudInfo();
+	const box = $("cloud");
+	if (cloud?.limit) {
+		const pct = Math.min(100, (cloud.used / cloud.limit) * 100);
+		const free = Math.max(0, cloud.limit - cloud.used);
+		box.hidden = false;
+		box.classList.toggle("warn", pct >= 80);
+		box.classList.toggle("full", pct >= 95);
+		$("cloud-text").textContent = `${fmtMb(cloud.used)} из ${fmtMb(cloud.limit)}`;
+		$("cloud-free").textContent = `свободно ${fmtMb(free)}`;
+		$("cloud-bar").style.width = pct.toFixed(1) + "%";
+	} else box.hidden = true;
+
 	if (!navigator.storage?.estimate) return;
 	const { usage = 0 } = await navigator.storage.estimate();
 	const n = books.filter(isDownloaded).length;
-	$("storage").textContent = n ? `Скачано книг: ${n} · занято на устройстве ${fmtMb(usage)}` : "";
+	$("storage").textContent = n ? `На этом устройстве скачано книг: ${n} · ${fmtMb(usage)}` : "";
 }
 
 /* ======================= Загрузка книги на сервер ======================= */
@@ -487,6 +515,12 @@ async function importFiles(fileList) {
 	if (!files.length) return;
 	if (!navigator.onLine) return alert("Для загрузки книги нужен интернет.");
 	files.sort((a, b) => collator.compare(a.name, b.name));
+	const cloud = cloudInfo();
+	const size = files.reduce((s, f) => s + f.size, 0);
+	if (cloud?.limit && cloud.used + size > cloud.limit) {
+		const free = Math.max(0, cloud.limit - cloud.used);
+		if (!confirm(`Книга весит ${fmtMb(size)}, а в облаке свободно ${fmtMb(free)}. При превышении лимита Vercel может заблокировать хранилище. Всё равно загрузить?`)) return;
+	}
 	navigator.storage?.persist?.().catch(() => {});
 
 	const status = $("import-status");
@@ -533,6 +567,7 @@ async function importFiles(fileList) {
 		// на этом устройстве книга сразу доступна офлайн — повторно скачивать не нужно
 		for (const [url, blob] of localCopies) await putLocal(url, blob).catch(() => {});
 		const book = hydrate({ ...meta, metaUrl, progressUrl: null });
+		if (cloud) lsSet(LS_CLOUD, JSON.stringify({ ...cloud, used: cloud.used + size + (coverBlob?.size || 0) }));
 		books.push(book);
 		cacheLibrary();
 		status.hidden = true;
@@ -1132,6 +1167,7 @@ function showEditSheet() {
 				<img alt="" />
 				<label class="btn btn-ghost">Сменить обложку<input type="file" accept="image/*" hidden /></label>
 			</div>
+			<p class="hint">Размер в облаке: ${fmtMb(bookSize(b))}</p>
 			<label class="field"><span>Название</span><input type="text" name="title" /></label>
 			<label class="field"><span>Автор</span><input type="text" name="author" /></label>
 			<p class="hint" data-msg></p>
@@ -1201,6 +1237,8 @@ function showEditSheet() {
 		}
 		await removeDownload(b);
 		lsSet(lsPosKey(b.id), null);
+		const cloud = cloudInfo();
+		if (cloud) lsSet(LS_CLOUD, JSON.stringify({ ...cloud, used: Math.max(0, cloud.used - bookSize(b)) }));
 		books = books.filter((x) => x.id !== b.id);
 		cacheLibrary();
 		if (current?.id === b.id) unloadCurrent();

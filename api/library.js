@@ -90,7 +90,14 @@ export async function GET(request) {
 		}),
 	);
 	if (stale.length) await del(stale).catch(() => {});
-	return json({ books: books.filter(Boolean), linksValidUntil: Date.now() + LINK_TTL_MS });
+	// занятое место в облаке — сумма размеров всех файлов (данные уже есть из list, без лишних запросов)
+	const used = blobs.reduce((sum, b) => sum + (b.size || 0), 0);
+	const limitGb = Number(process.env.MYBOOK_STORAGE_LIMIT_GB) || 1; // бесплатный тариф Vercel Blob — 1 ГБ
+	return json({
+		books: books.filter(Boolean),
+		linksValidUntil: Date.now() + LINK_TTL_MS,
+		storage: { used, limit: Math.round(limitGb * 1024 ** 3) },
+	});
 }
 
 export async function POST(request) {

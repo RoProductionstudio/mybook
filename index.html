@@ -17,10 +17,23 @@
 	<link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+	<!-- LOGIN -->
+	<main id="login" class="view login" hidden>
+		<img src="./icon.svg" alt="" class="login-icon" />
+		<h1>My Book</h1>
+		<p class="hint">Введите пароль, чтобы открыть свою библиотеку.</p>
+		<form id="login-form">
+			<input id="login-pass" type="password" autocomplete="current-password" placeholder="Пароль" required />
+			<button class="btn btn-primary" type="submit">Войти</button>
+		</form>
+		<p id="login-error" class="login-error"></p>
+	</main>
+
 	<!-- LIBRARY -->
 	<main id="library" class="view">
 		<header class="lib-header">
 			<h1>Мои книги</h1>
+			<button class="icon-btn sync" id="sync-btn" aria-label="Обновить библиотеку"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5M3 21v-5h5"/></svg></button>
 			<label class="btn btn-primary" for="file-input">
 				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
 				<span>Добавить</span>
@@ -28,7 +41,8 @@
 			<input id="file-input" type="file" accept="audio/*,.mp3,.m4a,.m4b,.aac,.ogg,.opus,.wav,.flac" multiple hidden />
 		</header>
 
-		<p class="hint" id="add-hint">Выберите один или несколько аудиофайлов. Несколько файлов, выбранных за раз, станут главами одной книги.</p>
+		<p class="net" id="net-status" hidden></p>
+		<p class="hint" id="add-hint">Выберите один или несколько аудиофайлов. Несколько файлов, выбранных за раз, станут главами одной книги. Книги появятся на всех ваших устройствах.</p>
 
 		<div id="import-status" class="import-status" hidden></div>
 
@@ -104,6 +118,7 @@
 			<button class="tool" id="speed-btn"><strong id="speed-val">1×</strong><span>Скорость</span></button>
 			<button class="tool" id="sleep-btn"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg><span id="sleep-val">Таймер</span></button>
 			<button class="tool" id="chapters-btn"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg><span>Главы</span></button>
+			<button class="tool" id="dl-btn"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg><span id="dl-val">Скачать</span></button>
 			<button class="tool" id="stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg><span>Стоп</span></button>
 		</div>
 	</section>
@@ -118,6 +133,6 @@
 
 	<audio id="audio" preload="auto"></audio>
 
-	<script type="module" src="./app.js"></script>
+	<script type="module" src="./app.js?v=2"></script>
 </body>
 </html>

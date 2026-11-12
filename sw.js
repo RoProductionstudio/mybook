@@ -1,7 +1,9 @@
-// Service worker: приложение открывается без интернета.
-// Стратегия network-first, чтобы обновления приходили сразу, а офлайн — из кэша.
-const CACHE = "mybook-v1";
-const SHELL = ["./", "./index.html", "./app.js", "./tags.js", "./styles.css", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
+// Service worker: оболочка приложения открывается без интернета.
+// Network-first, чтобы обновления приходили сразу, а офлайн — из кэша.
+// Запросы к /api/ и к файлам в Vercel Blob не кэшируются здесь
+// (скачанные книги хранятся в IndexedDB).
+const CACHE = "mybook-v2";
+const SHELL = ["./", "./index.html", "./app.js?v=2", "./tags.js", "./vendor/blob-client.js", "./styles.css", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
 	e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -15,7 +17,8 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
 	const req = e.request;
-	if (req.method !== "GET" || new URL(req.url).origin !== location.origin) return;
+	const url = new URL(req.url);
+	if (req.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/api/")) return;
 	e.respondWith(
 		fetch(req)
 			.then((res) => {
@@ -25,6 +28,6 @@ self.addEventListener("fetch", (e) => {
 				}
 				return res;
 			})
-			.catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match("./index.html"))),
+			.catch(() => caches.match(req).then((r) => r || caches.match("./index.html"))),
 	);
 });

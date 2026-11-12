@@ -1,7 +1,10 @@
-// My Book — личная библиотека аудиокниг.
-// Всё хранится локально в браузере (IndexedDB): аудиофайлы, обложки и место прослушивания.
+// My Book — аудиокниги, синхронизированные между устройствами.
+//
+// Файлы и метаданные хранятся в Vercel Blob (см. api/). Место прослушивания синхронизируется
+// между устройствами. Книгу можно скачать на устройство (IndexedDB) и слушать без интернета.
 
 import { readTags } from "./tags.js";
+import { upload } from "./vendor/blob-client.js";
 
 const SKIP_BACK = 15;
 const SKIP_FWD = 30;
@@ -15,58 +18,36 @@ const SLEEP_OPTIONS = [
 	{ label: "1 час", value: 60 },
 	{ label: "До конца главы", value: "chapter" },
 ];
+// Как часто отправлять место прослушивания на сервер (бережём лимиты Vercel Blob)
+const PUSH_WHILE_PLAYING_MS = 5 * 60 * 1000;
+const PUSH_MIN_GAP_MS = 15 * 1000;
+const REFRESH_MIN_GAP_MS = 2 * 60 * 1000;
+const MULTIPART_FROM = 50 * 1024 * 1024;
+
+const LS_PASS = "mybook:password";
+const LS_LIB = "mybook:library";
 const LS_LAST = "mybook:last";
 const lsPosKey = (id) => `mybook:pos:${id}`;
 
 const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24"><rect x="5.5" y="4" width="4.5" height="16" rx="1.2"/><rect x="14" y="4" width="4.5" height="16" rx="1.2"/></svg>';
-const ICON_PLAY_SM = '<svg viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>';
-const ICON_PAUSE_SM = '<svg viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><rect x="5.5" y="4" width="4.5" height="16" rx="1.2"/><rect x="14" y="4" width="4.5" height="16" rx="1.2"/></svg>';
+const SM = 'style="fill:currentColor;stroke:none"';
+const ICON_PLAY_SM = ICON_PLAY.replace("<svg ", `<svg ${SM} `);
+const ICON_PAUSE_SM = ICON_PAUSE.replace("<svg ", `<svg ${SM} `);
+const ICON_DONE = '<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>';
+const ICON_DL = '<svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>';
 
 const $ = (id) => document.getElementById(id);
 const audio = $("audio");
 
-/* ======================= IndexedDB ======================= */
-
-let dbPromise;
-function db() {
-	dbPromise ??= new Promise((resolve, reject) => {
-		const req = indexedDB.open("mybook", 1);
-		req.onupgradeneeded = () => {
-			const d = req.result;
-			d.createObjectStore("books", { keyPath: "id" });
-			d.createObjectStore("files", { keyPath: "id" });
-		};
-		req.onsuccess = () => resolve(req.result);
-		req.onerror = () => reject(req.error);
-	});
-	return dbPromise;
-}
-
-async function idb(store, mode, fn) {
-	const d = await db();
-	return new Promise((resolve, reject) => {
-		const tx = d.transaction(store, mode);
-		const req = fn(tx.objectStore(store));
-		tx.oncomplete = () => resolve(req?.result);
-		tx.onerror = () => reject(tx.error);
-		tx.onabort = () => reject(tx.error);
-	});
-}
-
-const getAllBooks = () => idb("books", "readonly", (s) => s.getAll());
-const putBook = (b) => idb("books", "readwrite", (s) => s.put(b));
-const getFile = (id) => idb("files", "readonly", (s) => s.get(id));
-const putFile = (f) => idb("files", "readwrite", (s) => s.put(f));
-const deleteFile = (id) => idb("files", "readwrite", (s) => s.delete(id));
-const deleteBookRow = (id) => idb("books", "readwrite", (s) => s.delete(id));
-
 /* ======================= Helpers ======================= */
 
-const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12));
 const collator = new Intl.Collator("ru", { numeric: true, sensitivity: "base" });
 const baseName = (name) => name.replace(/\.[^.]+$/, "").replace(/_/g, " ").trim();
+const extOf = (name) => (name.match(/\.([a-z0-9]{1,5})$/i)?.[1] || "bin").toLowerCase();
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const AUDIO_TYPES = { mp3: "audio/mpeg", m4a: "audio/mp4", m4b: "audio/mp4", aac: "audio/aac", ogg: "audio/ogg", oga: "audio/ogg", opus: "audio/ogg", wav: "audio/wav", flac: "audio/flac", webm: "audio/webm" };
 
 function fmt(sec) {
 	if (!Number.isFinite(sec) || sec < 0) sec = 0;
@@ -85,6 +66,8 @@ function fmtLong(sec) {
 	if (h) return `${h} ч`;
 	return `${m} мин`;
 }
+
+const fmtMb = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(1) + " ГБ" : Math.max(1, Math.round(n / 1048576)) + " МБ");
 
 const pluralChapters = (n) => {
 	const m10 = n % 10, m100 = n % 100;
@@ -107,17 +90,6 @@ function placeholderCover(title) {
 	return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 }
 
-const coverUrls = new Map();
-function coverUrl(book) {
-	if (!book.cover) return placeholderCover(book.title);
-	const cached = coverUrls.get(book.id);
-	if (cached && cached.blob === book.cover) return cached.url;
-	if (cached) URL.revokeObjectURL(cached.url);
-	const url = URL.createObjectURL(book.cover);
-	coverUrls.set(book.id, { blob: book.cover, url });
-	return url;
-}
-
 function probeDuration(blob) {
 	return new Promise((resolve) => {
 		const a = new Audio();
@@ -138,26 +110,313 @@ function probeDuration(blob) {
 	});
 }
 
-const totalDuration = (b) => b.chapters.reduce((s, c) => s + (c.duration || 0), 0);
-const chapterStart = (b, i) => b.chapters.slice(0, i).reduce((s, c) => s + (c.duration || 0), 0);
-const globalPos = (b) => chapterStart(b, b.chapterIndex) + (b.position || 0);
+const lsGet = (k) => {
+	try {
+		return localStorage.getItem(k);
+	} catch {
+		return null;
+	}
+};
+const lsSet = (k, v) => {
+	try {
+		v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v);
+	} catch {}
+};
+
+/* ======================= IndexedDB: скачанные файлы ======================= */
+
+let dbPromise;
+function db() {
+	dbPromise ??= new Promise((resolve, reject) => {
+		const req = indexedDB.open("mybook-offline", 1);
+		req.onupgradeneeded = () => req.result.createObjectStore("files"); // key = URL файла в Blob
+		req.onsuccess = () => resolve(req.result);
+		req.onerror = () => reject(req.error);
+	});
+	return dbPromise;
+}
+
+async function idb(mode, fn) {
+	const d = await db();
+	return new Promise((resolve, reject) => {
+		const tx = d.transaction("files", mode);
+		const req = fn(tx.objectStore("files"));
+		tx.oncomplete = () => resolve(req?.result);
+		tx.onerror = () => reject(tx.error);
+		tx.onabort = () => reject(tx.error);
+	});
+}
+
+const localFiles = new Set(); // URL файлов, которые уже есть на устройстве
+const getLocal = (url) => idb("readonly", (s) => s.get(url));
+const putLocal = async (url, blob) => {
+	await idb("readwrite", (s) => s.put(blob, url));
+	localFiles.add(url);
+};
+const delLocal = async (url) => {
+	await idb("readwrite", (s) => s.delete(url));
+	localFiles.delete(url);
+};
+async function loadLocalIndex() {
+	try {
+		const keys = await idb("readonly", (s) => s.getAllKeys());
+		keys.forEach((k) => localFiles.add(k));
+	} catch (e) {
+		console.warn("IndexedDB недоступна", e);
+	}
+}
+
+/* ======================= API ======================= */
+
+let password = lsGet(LS_PASS) || "";
+
+class AuthError extends Error {}
+
+async function api(method, body, { keepalive = false } = {}) {
+	const res = await fetch("/api/library", {
+		method,
+		headers: { "x-mybook-password": password, ...(body ? { "content-type": "application/json" } : {}) },
+		body: body ? JSON.stringify(body) : undefined,
+		cache: "no-store",
+		keepalive,
+	});
+	if (res.status === 401) throw new AuthError("unauthorized");
+	const data = await res.json().catch(() => ({}));
+	if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+	return data;
+}
+
+async function uploadFile(pathname, blob, contentType, onProgress) {
+	const res = await upload(pathname, blob, {
+		access: "public",
+		handleUploadUrl: "/api/upload",
+		headers: { "x-mybook-password": password },
+		contentType,
+		multipart: blob.size > MULTIPART_FROM,
+		onUploadProgress: onProgress ? ({ loaded }) => onProgress(loaded) : undefined,
+	});
+	return res.url;
+}
 
 /* ======================= State ======================= */
 
-let books = [];
-let current = null; // текущая книга
-let currentUrl = null; // objectURL текущей главы
+let books = []; // [{id,title,author,cover,chapters,createdAt, metaUrl, progressUrl, chapterIndex, position, speed, finished, t}]
+let current = null;
+let currentUrl = null;
 let pendingSeek = null;
-let lastIdbSave = 0;
 let lastLsSave = 0;
 let sleep = { mode: 0, endsAt: 0 };
 let sleepTick = null;
 let seeking = false;
+let lastRefresh = 0;
+const pushTimers = new Map();
+const lastPush = new Map();
+const downloads = new Map(); // bookId -> { loaded, total, abort }
+
+const totalDuration = (b) => b.chapters.reduce((s, c) => s + (c.duration || 0), 0);
+const chapterStart = (b, i) => b.chapters.slice(0, i).reduce((s, c) => s + (c.duration || 0), 0);
+const globalPos = (b) => chapterStart(b, b.chapterIndex) + (b.position || 0);
+const bookSize = (b) => b.chapters.reduce((s, c) => s + (c.size || 0), 0);
+const isDownloaded = (b) => b.chapters.every((c) => localFiles.has(c.url));
+const isPlayable = (b) => navigator.onLine || isDownloaded(b);
+
+function readLocalPos(id) {
+	try {
+		return JSON.parse(lsGet(lsPosKey(id)) || "null");
+	} catch {
+		return null;
+	}
+}
+
+function writeLocalPos(b, synced = false) {
+	lsSet(lsPosKey(b.id), JSON.stringify({ c: b.chapterIndex, p: b.position, s: b.speed, f: !!b.finished, t: b.t || Date.now(), synced }));
+}
+
+function cacheLibrary() {
+	const strip = books.map(({ id, title, author, cover, chapters, createdAt, metaUrl, progressUrl }) => ({ id, title, author, cover, chapters, createdAt, metaUrl, progressUrl }));
+	lsSet(LS_LIB, JSON.stringify(strip));
+}
+
+function hydrate(meta) {
+	const b = { chapterIndex: 0, position: 0, speed: 1, finished: false, t: 0, ...meta };
+	const local = readLocalPos(b.id);
+	if (local) Object.assign(b, { chapterIndex: local.c, position: local.p, speed: local.s || 1, finished: !!local.f, t: local.t });
+	b.chapterIndex = Math.min(Math.max(0, b.chapterIndex | 0), b.chapters.length - 1);
+	return b;
+}
+
+/* ======================= Синхронизация ======================= */
+
+async function refreshLibrary(force = false) {
+	if (!password || !navigator.onLine) return updateNetStatus();
+	if (!force && Date.now() - lastRefresh < REFRESH_MIN_GAP_MS) return;
+	lastRefresh = Date.now();
+	$("sync-btn").classList.add("spin");
+	try {
+		const { books: remote } = await api("GET");
+		const prev = new Map(books.map((b) => [b.id, b]));
+		const next = [];
+		for (const r of remote) {
+			const { progress, ...meta } = r;
+			const existing = prev.get(r.id);
+			const b = existing ? Object.assign(existing, meta) : hydrate(meta);
+			b.progressUrl = progress?.url || b.progressUrl || null;
+			const local = readLocalPos(b.id);
+			const localT = local?.t || 0;
+			const isPlayingThis = current?.id === b.id && !audio.paused;
+			if (progress && progress.t > localT && !isPlayingThis) {
+				// на другом устройстве послушали дальше — берём оттуда
+				Object.assign(b, { chapterIndex: Math.min(progress.c, b.chapters.length - 1), position: progress.p, speed: progress.s, finished: progress.f, t: progress.t });
+				writeLocalPos(b, true);
+				if (current?.id === b.id) await setChapter(b.chapterIndex, b.position);
+			} else if (local && !local.synced && localT > (progress?.t || 0)) {
+				schedulePush(b, 0);
+			}
+			next.push(b);
+		}
+		// книги, удалённые на другом устройстве
+		for (const [id, b] of prev) {
+			if (!remote.some((r) => r.id === id)) {
+				if (current?.id === id) unloadCurrent();
+				for (const c of b.chapters) if (localFiles.has(c.url)) await delLocal(c.url).catch(() => {});
+			}
+		}
+		books = next;
+		cacheLibrary();
+		renderLibrary();
+		if (current) {
+			current = books.find((b) => b.id === current.id) || null;
+			renderPlayerMeta();
+			updateMini();
+		} else {
+			restoreLast();
+		}
+	} catch (e) {
+		if (e instanceof AuthError) return logout();
+		console.warn("refresh failed", e);
+		lastRefresh = 0;
+	} finally {
+		$("sync-btn").classList.remove("spin");
+		updateNetStatus();
+	}
+}
+
+function schedulePush(b, delay) {
+	if (!b || !password) return;
+	clearTimeout(pushTimers.get(b.id));
+	const since = Date.now() - (lastPush.get(b.id) || 0);
+	const wait = Math.max(delay, PUSH_MIN_GAP_MS - since, 0);
+	pushTimers.set(b.id, setTimeout(() => pushProgress(b), wait));
+}
+
+async function pushProgress(b, { keepalive = false } = {}) {
+	clearTimeout(pushTimers.get(b.id));
+	pushTimers.delete(b.id);
+	if (!navigator.onLine || !password) return;
+	const local = readLocalPos(b.id);
+	if (local?.synced) return;
+	lastPush.set(b.id, Date.now());
+	const sentT = local?.t || b.t || Date.now();
+	try {
+		const res = await api(
+			"POST",
+			{ action: "progress", id: b.id, t: sentT, c: b.chapterIndex, p: b.position, s: b.speed, f: b.finished, oldUrl: b.progressUrl },
+			{ keepalive },
+		);
+		b.progressUrl = res.url;
+		const now = readLocalPos(b.id);
+		// если за время запроса позиция не менялась — помечаем как синхронизированную
+		if (now && now.t === sentT) lsSet(lsPosKey(b.id), JSON.stringify({ ...now, synced: true }));
+		cacheLibrary();
+	} catch (e) {
+		if (e instanceof AuthError) return logout();
+		console.warn("push failed", e);
+	}
+}
+
+function flushPushes(keepalive) {
+	for (const b of books) {
+		const local = readLocalPos(b.id);
+		if (local && !local.synced) pushProgress(b, { keepalive });
+	}
+}
+
+function updateNetStatus() {
+	const el = $("net-status");
+	if (!navigator.onLine) {
+		el.hidden = false;
+		el.textContent = "Нет интернета. Доступны только скачанные книги, место прослушивания синхронизируется позже.";
+	} else el.hidden = true;
+}
+
+/* ======================= Вход ======================= */
+
+function showLogin(message = "") {
+	$("login").hidden = false;
+	$("library").hidden = true;
+	$("player").hidden = true;
+	$("mini").hidden = true;
+	$("login-error").textContent = message;
+	$("login-pass").focus();
+}
+
+function logout(message = "Неверный пароль или он был изменён.") {
+	password = "";
+	lsSet(LS_PASS, null);
+	showLogin(message);
+}
+
+$("login-form").addEventListener("submit", async (e) => {
+	e.preventDefault();
+	password = $("login-pass").value;
+	$("login-error").textContent = "";
+	try {
+		await api("GET");
+		lsSet(LS_PASS, password);
+		$("login").hidden = true;
+		$("library").hidden = false;
+		$("login-pass").value = "";
+		await refreshLibrary(true);
+	} catch (err) {
+		password = "";
+		$("login-error").textContent =
+			err instanceof AuthError
+				? "Неверный пароль."
+				: err.message === "no-password-configured"
+					? "На сервере не задан MYBOOK_PASSWORD."
+					: err.message === "no-blob-store"
+						? "К проекту не подключено хранилище Vercel Blob."
+						: "Нет связи с сервером.";
+	}
+});
 
 /* ======================= Library ======================= */
 
 function sortBooks() {
-	books.sort((a, b) => (b.lastPlayedAt || b.createdAt) - (a.lastPlayedAt || a.createdAt));
+	books.sort((a, b) => (b.t || b.createdAt) - (a.t || a.createdAt));
+}
+
+const coverObjUrls = new Map();
+function coverSrc(b) {
+	if (!b.cover?.url) return placeholderCover(b.title);
+	if (coverObjUrls.has(b.cover.url)) return coverObjUrls.get(b.cover.url);
+	if (localFiles.has(b.cover.url)) {
+		getLocal(b.cover.url).then((blob) => {
+			if (!blob) return;
+			coverObjUrls.set(b.cover.url, URL.createObjectURL(blob));
+			document.querySelectorAll(`img[data-cover="${CSS.escape(b.cover.url)}"]`).forEach((img) => (img.src = coverObjUrls.get(b.cover.url)));
+		});
+	}
+	return b.cover.url;
+}
+
+function setCover(img, b) {
+	img.src = coverSrc(b);
+	img.dataset.cover = b.cover?.url || "";
+	img.onerror = () => {
+		img.onerror = null;
+		img.src = placeholderCover(b.title);
+	};
 }
 
 function renderLibrary() {
@@ -174,16 +433,24 @@ function renderLibrary() {
 		if (b.finished) status = "Прослушано";
 		else if (pos > 1) status = `Осталось ${fmtLong(total - pos)}`;
 		else status = total ? fmtLong(total) : "";
+		const dl = downloads.get(b.id);
+		const offline = dl
+			? `<span class="badge">${ICON_DL} ${Math.floor((dl.loaded / (dl.total || 1)) * 100)}%</span>`
+			: isDownloaded(b)
+				? `<span class="badge">${ICON_DONE} на устройстве</span>`
+				: "";
 		const li = document.createElement("li");
 		li.innerHTML = `
-			<button class="book${current?.id === b.id ? " active" : ""}">
-				<img src="${coverUrl(b)}" alt="" />
+			<button class="book${current?.id === b.id ? " active" : ""}${isPlayable(b) ? "" : " unavailable"}">
+				<img alt="" />
 				<span class="book-info">
 					<div class="book-title">${esc(b.title)}</div>
 					<div class="book-sub">${esc([b.author, b.chapters.length > 1 ? pluralChapters(b.chapters.length) : "", status].filter(Boolean).join(" · "))}</div>
+					<div class="book-sub">${offline}</div>
 					<div class="bar"><span style="width:${pct.toFixed(1)}%"></span></div>
 				</span>
 			</button>`;
+		setCover(li.querySelector("img"), b);
 		li.querySelector("button").onclick = () => openBook(b);
 		list.appendChild(li);
 	}
@@ -192,114 +459,230 @@ function renderLibrary() {
 
 async function updateStorageInfo() {
 	if (!navigator.storage?.estimate) return;
-	const { usage = 0, quota = 0 } = await navigator.storage.estimate();
-	const mb = (n) => (n / 1048576 >= 1024 ? (n / 1073741824).toFixed(1) + " ГБ" : Math.round(n / 1048576) + " МБ");
-	$("storage").textContent = quota ? `Занято ${mb(usage)} из доступных ${mb(quota)} на этом устройстве` : "";
+	const { usage = 0 } = await navigator.storage.estimate();
+	const n = books.filter(isDownloaded).length;
+	$("storage").textContent = n ? `Скачано книг: ${n} · занято на устройстве ${fmtMb(usage)}` : "";
 }
+
+/* ======================= Загрузка книги на сервер ======================= */
 
 async function importFiles(fileList) {
 	const files = [...fileList].filter((f) => f.type.startsWith("audio/") || /\.(mp3|m4a|m4b|aac|ogg|oga|opus|wav|flac|webm)$/i.test(f.name));
 	if (!files.length) return;
+	if (!navigator.onLine) return alert("Для загрузки книги нужен интернет.");
 	files.sort((a, b) => collator.compare(a.name, b.name));
-
 	navigator.storage?.persist?.().catch(() => {});
 
 	const status = $("import-status");
 	status.hidden = false;
-	const book = {
-		id: uid(),
-		title: "",
-		author: "",
-		cover: null,
-		chapters: [],
-		chapterIndex: 0,
-		position: 0,
-		speed: 1,
-		createdAt: Date.now(),
-		lastPlayedAt: 0,
-		finished: false,
+	const id = uid();
+	const totalBytes = files.reduce((s, f) => s + f.size, 0);
+	let doneBytes = 0;
+	const show = (text, loaded = 0) => {
+		const pct = Math.min(100, ((doneBytes + loaded) / totalBytes) * 100);
+		status.innerHTML = `${esc(text)}<div class="bar"><span style="width:${pct.toFixed(1)}%"></span></div>`;
 	};
+	const meta = { id, title: "", author: "", cover: null, chapters: [], createdAt: Date.now() };
 	let firstTags = null;
+	let coverBlob = null;
+	const localCopies = [];
+	window.addEventListener("beforeunload", warnUnload);
 	try {
 		for (let i = 0; i < files.length; i++) {
 			const f = files[i];
-			status.textContent = `Загрузка ${i + 1} из ${files.length}: ${f.name}`;
+			show(`Загрузка ${i + 1} из ${files.length}: ${f.name}`);
 			const tags = await readTags(f).catch(() => ({}));
 			if (!firstTags) firstTags = tags;
-			if (!book.cover && tags.cover) book.cover = tags.cover;
-			if (!book.author && tags.artist) book.author = tags.artist;
+			if (!coverBlob && tags.cover) coverBlob = tags.cover;
+			if (!meta.author && tags.artist) meta.author = tags.artist;
 			const duration = await probeDuration(f);
-			const fileId = uid();
-			await putFile({ id: fileId, blob: f, name: f.name });
-			book.chapters.push({
-				fileId,
-				name: files.length > 1 ? tags.title || baseName(f.name) : baseName(f.name),
-				duration,
-			});
+			const ext = extOf(f.name);
+			const type = f.type || AUDIO_TYPES[ext] || "application/octet-stream";
+			const url = await uploadFile(`b/${id}/${String(i + 1).padStart(3, "0")}.${ext}`, f, type, (loaded) =>
+				show(`Загрузка ${i + 1} из ${files.length}: ${f.name}`, loaded),
+			);
+			doneBytes += f.size;
+			localCopies.push([url, f]);
+			meta.chapters.push({ name: files.length > 1 ? tags.title || baseName(f.name) : baseName(f.name), duration, url, size: f.size, type });
+		}
+		if (coverBlob) {
+			const ext = coverBlob.type === "image/png" ? "png" : coverBlob.type === "image/webp" ? "webp" : "jpg";
+			const url = await uploadFile(`b/${id}/cover.${ext}`, coverBlob, coverBlob.type || "image/jpeg");
+			meta.cover = { url, type: coverBlob.type || "image/jpeg" };
+			localCopies.push([url, coverBlob]);
 		}
 		const names = files.map((f) => baseName(f.name));
-		book.title =
-			firstTags?.album ||
-			(files.length === 1 ? firstTags?.title || names[0] : commonPrefix(names) || names[0]) ||
-			"Без названия";
-		await putBook(book);
+		meta.title = firstTags?.album || (files.length === 1 ? firstTags?.title || names[0] : commonPrefix(names) || names[0]) || "Без названия";
+		const { url: metaUrl } = await api("POST", { action: "meta", id, meta });
+		// на этом устройстве книга сразу доступна офлайн — повторно скачивать не нужно
+		for (const [url, blob] of localCopies) await putLocal(url, blob).catch(() => {});
+		const book = hydrate({ ...meta, metaUrl, progressUrl: null });
 		books.push(book);
+		cacheLibrary();
 		status.hidden = true;
 		renderLibrary();
 		if (!current) await loadBook(book, false);
 	} catch (err) {
 		console.error(err);
-		for (const c of book.chapters) await deleteFile(c.fileId).catch(() => {});
-		status.textContent =
-			err?.name === "QuotaExceededError"
-				? "Недостаточно места на устройстве для этой книги."
-				: "Не удалось загрузить файлы: " + (err?.message || err);
+		if (err instanceof AuthError) return logout();
+		api("POST", { action: "delete", id }).catch(() => {});
+		status.textContent = "Не удалось загрузить книгу: " + (err?.message || err);
+	} finally {
+		window.removeEventListener("beforeunload", warnUnload);
 	}
+}
+
+function warnUnload(e) {
+	e.preventDefault();
+	e.returnValue = "";
+}
+
+/* ======================= Скачивание для офлайна ======================= */
+
+async function downloadBook(b) {
+	if (downloads.has(b.id)) return;
+	if (!navigator.onLine) return alert("Для скачивания нужен интернет.");
+	navigator.storage?.persist?.().catch(() => {});
+	const ctrl = new AbortController();
+	const items = [...b.chapters.map((c) => ({ url: c.url, size: c.size || 0 })), ...(b.cover?.url ? [{ url: b.cover.url, size: 0 }] : [])].filter(
+		(x) => !localFiles.has(x.url),
+	);
+	const state = { loaded: 0, total: items.reduce((s, x) => s + x.size, 0) || 1, abort: () => ctrl.abort() };
+	downloads.set(b.id, state);
+	updateDownloadUi();
+	let lastUi = 0;
+	try {
+		for (const item of items) {
+			const res = await fetch(item.url, { signal: ctrl.signal });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const reader = res.body.getReader();
+			const chunks = [];
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				chunks.push(value);
+				state.loaded += value.length;
+				if (Date.now() - lastUi > 400) {
+					lastUi = Date.now();
+					updateDownloadUi();
+				}
+			}
+			const blob = new Blob(chunks, { type: res.headers.get("content-type") || "" });
+			await putLocal(item.url, blob);
+		}
+	} catch (e) {
+		if (e.name !== "AbortError") {
+			console.error(e);
+			alert(e?.name === "QuotaExceededError" ? "Недостаточно места на устройстве." : "Не удалось скачать книгу. Проверьте интернет и попробуйте ещё раз.");
+		}
+	} finally {
+		downloads.delete(b.id);
+		updateDownloadUi();
+		renderLibrary();
+	}
+	if (current === b && isDownloaded(b)) switchToLocal();
+}
+
+// Переключить текущую главу с сетевого потока на скачанный файл (без потери позиции)
+async function switchToLocal() {
+	if (!current || currentUrl?.startsWith("blob:") || !localFiles.has(current.chapters[current.chapterIndex].url)) return;
+	const wasPlaying = !audio.paused;
+	saveProgress(true);
+	await setChapter(current.chapterIndex, current.position);
+	if (wasPlaying) play();
+}
+
+async function removeDownload(b) {
+	for (const c of b.chapters) if (localFiles.has(c.url)) await delLocal(c.url).catch(() => {});
+	if (b.cover?.url && localFiles.has(b.cover.url)) await delLocal(b.cover.url).catch(() => {});
+	updateDownloadUi();
+	renderLibrary();
+}
+
+function updateDownloadUi() {
+	if (current) {
+		const dl = downloads.get(current.id);
+		const btn = $("dl-btn");
+		if (dl) {
+			$("dl-val").textContent = `${Math.floor((dl.loaded / dl.total) * 100)}%`;
+			btn.querySelector("svg").outerHTML = ICON_DL;
+			btn.classList.add("on");
+		} else if (isDownloaded(current)) {
+			$("dl-val").textContent = "Скачано";
+			btn.querySelector("svg").outerHTML = ICON_DONE;
+			btn.classList.add("on");
+		} else {
+			$("dl-val").textContent = "Скачать";
+			btn.querySelector("svg").outerHTML = ICON_DL;
+			btn.classList.remove("on");
+		}
+	}
+	if (!$("library").hidden) {
+		// обновим только процент в списке, без полной перерисовки
+		const now = Date.now();
+		if (!updateDownloadUi.t || now - updateDownloadUi.t > 1000) {
+			updateDownloadUi.t = now;
+			renderLibrary();
+		}
+	}
+}
+
+function onDownloadButton() {
+	if (!current) return;
+	const b = current;
+	const dl = downloads.get(b.id);
+	if (dl) {
+		if (confirm("Остановить скачивание?")) dl.abort();
+		return;
+	}
+	if (isDownloaded(b)) {
+		const list = el('<div class="opt-list"></div>');
+		const info = el(`<p class="hint">Книга сохранена на этом устройстве (${fmtMb(bookSize(b))}) и доступна без интернета.</p>`);
+		const rm = el('<button class="opt"><span>Удалить с устройства (останется в облаке)</span></button>');
+		rm.onclick = () => {
+			closeSheet();
+			removeDownload(b);
+		};
+		list.append(info, rm);
+		openSheet("Скачано", list);
+		return;
+	}
+	downloadBook(b);
 }
 
 /* ======================= Playback ======================= */
 
-function readLsPos(id) {
-	try {
-		return JSON.parse(localStorage.getItem(lsPosKey(id)) || "null");
-	} catch {
-		return null;
-	}
-}
-
 function saveProgress(force = false) {
 	if (!current) return;
 	const now = Date.now();
-	if (!pendingSeek && audio.src && Number.isFinite(audio.currentTime) && audio.readyState > 0) {
+	if (pendingSeek == null && audio.src && Number.isFinite(audio.currentTime) && audio.readyState > 0) {
 		current.position = audio.currentTime;
 	}
-	// localStorage — синхронно и надёжно при закрытии вкладки
 	if (force || now - lastLsSave > 1000) {
 		lastLsSave = now;
-		try {
-			localStorage.setItem(lsPosKey(current.id), JSON.stringify({ c: current.chapterIndex, p: current.position, t: now, s: current.speed }));
-			localStorage.setItem(LS_LAST, current.id);
-		} catch {}
-	}
-	if (force || now - lastIdbSave > 5000) {
-		lastIdbSave = now;
-		current.savedAt = now;
-		putBook(current).catch(console.error);
+		current.t = now;
+		writeLocalPos(current, false);
+		lsSet(LS_LAST, current.id);
 	}
 }
 
 async function setChapter(index, position = 0) {
 	const b = current;
+	if (!b) return;
 	index = Math.max(0, Math.min(b.chapters.length - 1, index));
-	const rec = await getFile(b.chapters[index].fileId);
-	if (!rec) throw new Error("Файл главы не найден");
+	const ch = b.chapters[index];
+	let src = ch.url;
+	if (localFiles.has(ch.url)) {
+		const blob = await getLocal(ch.url).catch(() => null);
+		if (blob) src = URL.createObjectURL(blob);
+	}
 	if (current !== b) return;
-	if (currentUrl) URL.revokeObjectURL(currentUrl);
-	currentUrl = URL.createObjectURL(rec.blob);
+	if (currentUrl?.startsWith("blob:")) URL.revokeObjectURL(currentUrl);
+	currentUrl = src;
 	b.chapterIndex = index;
 	b.position = position;
 	pendingSeek = position;
-	audio.src = currentUrl;
+	audio.src = src;
 	audio.defaultPlaybackRate = b.speed || 1;
 	audio.playbackRate = b.speed || 1;
 	audio.load();
@@ -310,34 +693,39 @@ async function setChapter(index, position = 0) {
 async function loadBook(book, autoplay) {
 	if (current && current.id !== book.id) {
 		saveProgress(true);
+		schedulePush(current, 0);
 		audio.pause();
 	}
 	current = book;
-	// берём самую свежую позицию из localStorage, если она новее IndexedDB
-	const ls = readLsPos(book.id);
-	if (ls && ls.t > (book.savedAt || 0) && ls.c < book.chapters.length) {
-		book.chapterIndex = ls.c;
-		book.position = ls.p;
-		if (ls.s) book.speed = ls.s;
-	}
-	try {
-		localStorage.setItem(LS_LAST, book.id);
-	} catch {}
+	lsSet(LS_LAST, book.id);
 	await setChapter(book.chapterIndex || 0, book.position || 0);
-	updateSpeedUi();
 	renderPlayerMeta();
 	updateMini();
 	if (autoplay) play();
 }
 
+function unloadCurrent() {
+	audio.pause();
+	audio.removeAttribute("src");
+	audio.load();
+	if (currentUrl?.startsWith("blob:")) URL.revokeObjectURL(currentUrl);
+	currentUrl = null;
+	current = null;
+	lsSet(LS_LAST, null);
+	if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
+	updateMini();
+}
+
 async function openBook(book) {
+	if (!isPlayable(book)) return alert("Эта книга не скачана на устройство, а интернета сейчас нет.");
 	if (current?.id !== book.id) await loadBook(book, true);
-	else if (audio.paused && !book.lastPlayedAt) play();
+	else if (audio.paused && !book.t) play();
 	openPlayer();
 }
 
 function play() {
 	if (!current) return;
+	if (!isPlayable(current)) return alert("Книга не скачана на устройство, а интернета сейчас нет.");
 	if (current.finished) {
 		current.finished = false;
 		if (current.chapterIndex === current.chapters.length - 1 && audio.duration && audio.currentTime >= audio.duration - 1) {
@@ -345,14 +733,10 @@ function play() {
 			return;
 		}
 	}
-	current.lastPlayedAt = Date.now();
 	audio.play().catch((e) => console.warn("play()", e));
 }
 
-function pause() {
-	audio.pause();
-}
-
+const pause = () => audio.pause();
 const toggle = () => (audio.paused ? play() : pause());
 
 async function seekGlobal(t) {
@@ -367,9 +751,8 @@ async function seekGlobal(t) {
 		i++;
 	}
 	const offset = t - start;
-	if (i === b.chapterIndex) {
-		audio.currentTime = offset;
-	} else {
+	if (i === b.chapterIndex) audio.currentTime = offset;
+	else {
 		const wasPlaying = !audio.paused;
 		await setChapter(i, offset);
 		if (wasPlaying) play();
@@ -379,21 +762,20 @@ async function seekGlobal(t) {
 
 function skip(delta) {
 	if (!current) return;
-	const b = current;
-	// если длительности не известны — перематываем внутри главы
-	if (!totalDuration(b)) {
+	if (!totalDuration(current)) {
 		audio.currentTime = Math.max(0, audio.currentTime + delta);
 		return;
 	}
-	seekGlobal(chapterStart(b, b.chapterIndex) + audio.currentTime + delta);
+	seekGlobal(chapterStart(current, current.chapterIndex) + audio.currentTime + delta);
 }
 
-async function gotoChapter(i, { keepPlaying = true } = {}) {
+async function gotoChapter(i) {
 	if (!current) return;
 	const wasPlaying = !audio.paused;
 	await setChapter(i, 0);
-	if (keepPlaying && wasPlaying) play();
+	if (wasPlaying) play();
 	saveProgress(true);
+	schedulePush(current, 0);
 }
 
 function prevChapter() {
@@ -415,6 +797,7 @@ function setSpeed(s) {
 	audio.playbackRate = s;
 	updateSpeedUi();
 	saveProgress(true);
+	schedulePush(current, 0);
 }
 
 function stop() {
@@ -428,11 +811,6 @@ function stop() {
 
 audio.addEventListener("loadedmetadata", () => {
 	if (!current) return;
-	const ch = current.chapters[current.chapterIndex];
-	if (Number.isFinite(audio.duration) && audio.duration > 0 && Math.abs((ch.duration || 0) - audio.duration) > 1) {
-		ch.duration = audio.duration;
-		saveProgress(true);
-	}
 	if (pendingSeek != null) {
 		const t = Math.min(pendingSeek, Math.max(0, (audio.duration || Infinity) - 1));
 		pendingSeek = null;
@@ -443,9 +821,10 @@ audio.addEventListener("loadedmetadata", () => {
 });
 
 audio.addEventListener("timeupdate", () => {
-	if (pendingSeek != null) return;
+	if (pendingSeek != null || !current) return;
 	updateTimeUi();
 	saveProgress();
+	if (!audio.paused && Date.now() - (lastPush.get(current.id) || 0) > PUSH_WHILE_PLAYING_MS && !pushTimers.has(current.id)) schedulePush(current, 0);
 	if (sleep.mode && sleep.mode !== "chapter" && Date.now() >= sleep.endsAt) {
 		pause();
 		setSleep(0);
@@ -454,16 +833,17 @@ audio.addEventListener("timeupdate", () => {
 
 audio.addEventListener("play", () => {
 	updatePlayUi();
+	if (current && !lastPush.has(current.id)) lastPush.set(current.id, Date.now());
 	if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
 });
 audio.addEventListener("pause", () => {
 	updatePlayUi();
 	saveProgress(true);
+	if (current) schedulePush(current, 0);
 	if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
 });
 audio.addEventListener("seeked", () => saveProgress(true));
 audio.addEventListener("ratechange", () => {
-	// некоторые браузеры сбрасывают скорость при смене источника
 	if (current && audio.playbackRate !== current.speed && !audio.paused && audio.readyState > 0) audio.playbackRate = current.speed;
 });
 
@@ -472,10 +852,8 @@ audio.addEventListener("ended", async () => {
 	if (!b) return;
 	if (sleep.mode === "chapter") {
 		setSleep(0);
-		if (b.chapterIndex < b.chapters.length - 1) {
-			await setChapter(b.chapterIndex + 1, 0);
-			saveProgress(true);
-		}
+		if (b.chapterIndex < b.chapters.length - 1) await setChapter(b.chapterIndex + 1, 0);
+		saveProgress(true);
 		return;
 	}
 	if (b.chapterIndex < b.chapters.length - 1) {
@@ -484,21 +862,38 @@ audio.addEventListener("ended", async () => {
 	} else {
 		b.finished = true;
 		saveProgress(true);
+		schedulePush(b, 0);
 		renderLibrary();
 	}
 });
 
 audio.addEventListener("error", () => {
-	if (!audio.src) return;
+	if (!audio.src || !current) return;
+	if (!currentUrl?.startsWith("blob:") && localFiles.has(current.chapters[current.chapterIndex].url)) return switchToLocal();
 	console.error("audio error", audio.error);
-	$("p-chapter").textContent = "Этот формат не поддерживается браузером";
+	$("p-chapter").textContent = navigator.onLine ? "Не удалось воспроизвести файл" : "Нет интернета — скачайте книгу для офлайна";
 });
 
-// Сохраняем позицию при сворачивании/закрытии приложения
 document.addEventListener("visibilitychange", () => {
-	if (document.visibilityState === "hidden") saveProgress(true);
+	if (document.visibilityState === "hidden") {
+		saveProgress(true);
+		flushPushes(true);
+	} else if (password) refreshLibrary();
 });
-window.addEventListener("pagehide", () => saveProgress(true));
+window.addEventListener("pagehide", () => {
+	saveProgress(true);
+	flushPushes(true);
+});
+window.addEventListener("online", () => {
+	updateNetStatus();
+	renderLibrary();
+	flushPushes(false);
+	refreshLibrary(true);
+});
+window.addEventListener("offline", () => {
+	updateNetStatus();
+	renderLibrary();
+});
 
 /* ======================= Player UI ======================= */
 
@@ -528,14 +923,19 @@ window.addEventListener("popstate", () => {
 });
 
 function renderPlayerMeta() {
-	if (!current) return;
-	$("p-cover").src = coverUrl(current);
+	if (!current) {
+		if (!$("player").hidden) closePlayer();
+		return;
+	}
+	setCover($("p-cover"), current);
 	$("p-title").textContent = current.title;
 	$("p-author").textContent = current.author || "";
 	updateChapterUi();
 	updatePlayUi();
 	updateSpeedUi();
 	updateSleepUi();
+	updateDownloadUi();
+	updateTimeUi();
 }
 
 function updateChapterUi() {
@@ -543,10 +943,10 @@ function updateChapterUi() {
 	const b = current;
 	const many = b.chapters.length > 1;
 	$("p-chapter").textContent = many ? `${b.chapterIndex + 1}/${b.chapters.length} · ${b.chapters[b.chapterIndex].name}` : b.chapters[0].name;
-	$("prev").disabled = false;
 	$("next").disabled = b.chapterIndex >= b.chapters.length - 1;
 	$("next").style.opacity = $("next").disabled ? 0.35 : 1;
 	$("chapters-btn").hidden = !many;
+	$("player").querySelector(".tools").style.gridTemplateColumns = `repeat(${many ? 5 : 4}, 1fr)`;
 	updateMini();
 }
 
@@ -560,7 +960,7 @@ function updatePlayUi() {
 
 function updateTimeUi() {
 	if (!current) return;
-	const dur = audio.duration || current.chapters[current.chapterIndex].duration || 0;
+	const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : current.chapters[current.chapterIndex].duration || 0;
 	const cur = pendingSeek ?? audio.currentTime ?? 0;
 	if (!seeking) {
 		const v = dur ? Math.round((cur / dur) * 1000) : 0;
@@ -572,9 +972,7 @@ function updateTimeUi() {
 	const total = totalDuration(current);
 	const g = chapterStart(current, current.chapterIndex) + cur;
 	const speed = current.speed || 1;
-	$("book-left").textContent = total
-		? `Книга: ${Math.floor((g / total) * 100)}% · осталось ${fmtLong((total - g) / speed)}${speed !== 1 ? ` при ${speed}×` : ""}`
-		: "";
+	$("book-left").textContent = total ? `Книга: ${Math.floor((g / total) * 100)}% · осталось ${fmtLong((total - g) / speed)}${speed !== 1 ? ` при ${speed}×` : ""}` : "";
 	$("mini-bar").style.width = total ? ((g / total) * 100).toFixed(2) + "%" : "0";
 	updatePositionState();
 }
@@ -586,16 +984,14 @@ function updateSpeedUi() {
 }
 
 function updateMini() {
-	const show = !!current && $("player").hidden;
+	const show = !!current && $("player").hidden && $("login").hidden;
 	$("mini").hidden = !show;
 	if (!current) return;
-	$("mini-cover").src = coverUrl(current);
+	setCover($("mini-cover"), current);
 	$("mini-title").textContent = current.title;
-	$("mini-sub").textContent =
-		current.chapters.length > 1 ? current.chapters[current.chapterIndex].name : current.author || fmt(current.position);
+	$("mini-sub").textContent = current.chapters.length > 1 ? current.chapters[current.chapterIndex].name : current.author || "";
 }
 
-// Перемотка ползунком
 const seekEl = $("seek");
 seekEl.addEventListener("input", () => {
 	seeking = true;
@@ -630,20 +1026,20 @@ function setSleep(mode) {
 }
 
 function updateSleepUi() {
-	const el = $("sleep-val");
+	const e = $("sleep-val");
 	$("sleep-btn").classList.toggle("on", !!sleep.mode);
-	if (!sleep.mode) el.textContent = "Таймер";
-	else if (sleep.mode === "chapter") el.textContent = "Конец главы";
-	else el.textContent = fmt((sleep.endsAt - Date.now()) / 1000);
+	if (!sleep.mode) e.textContent = "Таймер";
+	else if (sleep.mode === "chapter") e.textContent = "Глава";
+	else e.textContent = fmt((sleep.endsAt - Date.now()) / 1000);
 }
 
 /* ======================= Bottom sheet ======================= */
 
 function openSheet(title, body) {
 	$("sheet-title").textContent = title;
-	const container = $("sheet-body");
-	container.innerHTML = "";
-	container.append(body);
+	const c = $("sheet-body");
+	c.innerHTML = "";
+	c.append(body);
 	$("sheet").hidden = false;
 	$("sheet-backdrop").hidden = false;
 }
@@ -704,15 +1100,16 @@ function showChaptersSheet() {
 function showEditSheet() {
 	if (!current) return;
 	const b = current;
-	let newCover = undefined;
+	let newCover = null;
 	const form = el(`
 		<div>
 			<div class="edit-cover">
-				<img alt="" src="${coverUrl(b)}" />
+				<img alt="" />
 				<label class="btn btn-ghost">Сменить обложку<input type="file" accept="image/*" hidden /></label>
 			</div>
 			<label class="field"><span>Название</span><input type="text" name="title" /></label>
 			<label class="field"><span>Автор</span><input type="text" name="author" /></label>
+			<p class="hint" data-msg></p>
 			<div class="row">
 				<button class="btn btn-primary" data-act="save">Сохранить</button>
 			</div>
@@ -721,6 +1118,7 @@ function showEditSheet() {
 				<button class="btn btn-danger" data-act="delete">Удалить книгу</button>
 			</div>
 		</div>`);
+	setCover(form.querySelector(".edit-cover img"), b);
 	form.querySelector('[name="title"]').value = b.title;
 	form.querySelector('[name="author"]').value = b.author || "";
 	form.querySelector('input[type="file"]').onchange = (e) => {
@@ -729,62 +1127,74 @@ function showEditSheet() {
 		newCover = f;
 		form.querySelector(".edit-cover img").src = URL.createObjectURL(f);
 	};
-	form.querySelector('[data-act="save"]').onclick = async () => {
-		b.title = form.querySelector('[name="title"]').value.trim() || b.title;
-		b.author = form.querySelector('[name="author"]').value.trim();
-		if (newCover) b.cover = newCover;
-		await putBook(b);
-		closeSheet();
-		renderPlayerMeta();
-		updateMediaSession();
+	const msg = form.querySelector("[data-msg]");
+	form.querySelector('[data-act="save"]').onclick = async (e) => {
+		if (!navigator.onLine) return (msg.textContent = "Для изменения нужен интернет.");
+		e.target.disabled = true;
+		msg.textContent = "Сохранение…";
+		try {
+			const meta = {
+				id: b.id,
+				title: form.querySelector('[name="title"]').value.trim() || b.title,
+				author: form.querySelector('[name="author"]').value.trim(),
+				cover: b.cover,
+				chapters: b.chapters,
+				createdAt: b.createdAt,
+			};
+			if (newCover) {
+				const ext = extOf(newCover.name || "cover.jpg");
+				const url = await uploadFile(`b/${b.id}/cover.${ext}`, newCover, newCover.type || "image/jpeg");
+				await putLocal(url, newCover).catch(() => {});
+				meta.cover = { url, type: newCover.type || "image/jpeg" };
+			}
+			const { url } = await api("POST", { action: "meta", id: b.id, meta, oldUrl: b.metaUrl });
+			Object.assign(b, meta, { metaUrl: url });
+			cacheLibrary();
+			closeSheet();
+			renderPlayerMeta();
+			updateMediaSession();
+		} catch (err) {
+			if (err instanceof AuthError) return logout();
+			msg.textContent = "Не удалось сохранить: " + err.message;
+			e.target.disabled = false;
+		}
 	};
 	form.querySelector('[data-act="restart"]').onclick = async () => {
 		b.finished = false;
 		closeSheet();
-		await gotoChapter(0, { keepPlaying: true });
+		await gotoChapter(0);
 	};
 	form.querySelector('[data-act="delete"]').onclick = async () => {
-		if (!confirm(`Удалить «${b.title}» с этого устройства?`)) return;
+		if (!navigator.onLine) return (msg.textContent = "Для удаления нужен интернет.");
+		if (!confirm(`Удалить «${b.title}» со всех устройств?`)) return;
 		closeSheet();
-		await removeBook(b);
+		try {
+			await api("POST", { action: "delete", id: b.id });
+		} catch (err) {
+			if (err instanceof AuthError) return logout();
+			return alert("Не удалось удалить: " + err.message);
+		}
+		await removeDownload(b);
+		lsSet(lsPosKey(b.id), null);
+		books = books.filter((x) => x.id !== b.id);
+		cacheLibrary();
+		if (current?.id === b.id) unloadCurrent();
+		closePlayer();
 	};
 	openSheet("Книга", form);
 }
 
-async function removeBook(b) {
-	if (current?.id === b.id) {
-		audio.pause();
-		audio.removeAttribute("src");
-		audio.load();
-		if (currentUrl) URL.revokeObjectURL(currentUrl);
-		currentUrl = null;
-		current = null;
-		try {
-			localStorage.removeItem(LS_LAST);
-		} catch {}
-	}
-	for (const c of b.chapters) await deleteFile(c.fileId).catch(() => {});
-	await deleteBookRow(b.id);
-	try {
-		localStorage.removeItem(lsPosKey(b.id));
-	} catch {}
-	books = books.filter((x) => x.id !== b.id);
-	closePlayer();
-	if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
-}
-
-/* ======================= Media Session (экран блокировки) ======================= */
+/* ======================= Media Session ======================= */
 
 function updateMediaSession() {
 	if (!("mediaSession" in navigator) || !current) return;
 	const b = current;
-	const art = coverUrl(b);
 	try {
 		navigator.mediaSession.metadata = new MediaMetadata({
 			title: b.chapters.length > 1 ? b.chapters[b.chapterIndex].name : b.title,
 			artist: b.author || "",
 			album: b.title,
-			artwork: [{ src: art, sizes: "512x512", type: b.cover?.type || "image/svg+xml" }],
+			artwork: [{ src: coverSrc(b), sizes: "512x512", type: b.cover?.type || "image/svg+xml" }],
 		});
 	} catch {}
 }
@@ -799,7 +1209,6 @@ function updatePositionState() {
 }
 
 if ("mediaSession" in navigator) {
-	const ms = navigator.mediaSession;
 	const handlers = {
 		play: () => play(),
 		pause: () => pause(),
@@ -815,7 +1224,7 @@ if ("mediaSession" in navigator) {
 	};
 	for (const [k, fn] of Object.entries(handlers)) {
 		try {
-			ms.setActionHandler(k, fn);
+			navigator.mediaSession.setActionHandler(k, fn);
 		} catch {}
 	}
 }
@@ -835,9 +1244,11 @@ $("stop").onclick = stop;
 $("speed-btn").onclick = showSpeedSheet;
 $("sleep-btn").onclick = showSleepSheet;
 $("chapters-btn").onclick = showChaptersSheet;
+$("dl-btn").onclick = onDownloadButton;
 $("p-chapter").onclick = () => current?.chapters.length > 1 && showChaptersSheet();
 $("edit-book").onclick = showEditSheet;
 $("close-player").onclick = () => closePlayer();
+$("sync-btn").onclick = () => refreshLibrary(true);
 $("mini").onclick = openPlayer;
 $("mini").onkeydown = (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), openPlayer());
 $("mini-toggle").onclick = (e) => {
@@ -847,7 +1258,6 @@ $("mini-toggle").onclick = (e) => {
 $("back-label").textContent = SKIP_BACK;
 $("fwd-label").textContent = SKIP_FWD;
 
-// Клавиатура (на компьютере)
 document.addEventListener("keydown", (e) => {
 	if (e.target.closest?.("input, textarea") || !current) return;
 	if (e.code === "Space") {
@@ -858,22 +1268,29 @@ document.addEventListener("keydown", (e) => {
 	else if (e.key === "Escape") closeSheet();
 });
 
+function restoreLast() {
+	if (current) return;
+	// на новом устройстве берём книгу, которую слушали последней на любом устройстве
+	const last = books.find((b) => b.id === lsGet(LS_LAST)) || [...books].filter((b) => b.t && !b.finished).sort((a, b) => b.t - a.t)[0];
+	if (last && isPlayable(last)) loadBook(last, false).catch(console.error);
+}
+
 async function init() {
 	updatePlayUi();
+	updateNetStatus();
+	await loadLocalIndex();
 	try {
-		books = await getAllBooks();
-	} catch (err) {
-		console.error(err);
-		$("storage").textContent = "Хранилище браузера недоступно (возможно, включён приватный режим).";
+		books = JSON.parse(lsGet(LS_LIB) || "[]").map(hydrate);
+	} catch {
+		books = [];
 	}
-	renderLibrary();
-	let lastId = null;
-	try {
-		lastId = localStorage.getItem(LS_LAST);
-	} catch {}
-	const last = books.find((b) => b.id === lastId);
-	if (last) await loadBook(last, false).catch(console.error);
-	renderLibrary();
+	if (!password) {
+		showLogin();
+	} else {
+		renderLibrary();
+		restoreLast();
+		refreshLibrary(true);
+	}
 	if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 }
 

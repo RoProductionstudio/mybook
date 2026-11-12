@@ -154,3 +154,26 @@ input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; bo
 .edit-cover img { width: 72px; height: 72px; border-radius: 10px; object-fit: cover; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .row .btn { flex: 1; justify-content: center; }
+
+/* ---------- v2: login, sync, downloads ---------- */
+
+.lib-header h1 { flex: 1; }
+.sync svg { width: 22px; height: 22px; color: var(--muted); }
+.sync.spin svg { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.net { background: var(--surface); color: var(--muted); border-radius: var(--radius); padding: 10px 14px; font-size: 14px; margin: 12px 0 0; }
+
+.login { display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: calc(15vh + var(--safe-t)); }
+.login-icon { width: 88px; height: 88px; border-radius: 20px; }
+.login h1 { margin: 16px 0 4px; }
+.login form { display: grid; gap: 10px; width: 100%; max-width: 320px; margin-top: 8px; }
+.login input { padding: 14px; border-radius: 12px; border: 1px solid var(--surface-2); background: var(--surface); color: var(--text); font: inherit; text-align: center; }
+.login .btn { justify-content: center; border: 0; font: inherit; font-weight: 600; }
+.login-error { color: var(--danger); min-height: 1.4em; font-size: 14px; }
+
+.tools { grid-template-columns: repeat(5, 1fr); }
+.badge { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); }
+.badge svg { width: 13px; height: 13px; vertical-align: -2px; }
+.book.unavailable { opacity: 0.45; }
+.import-status .bar { margin-top: 8px; }

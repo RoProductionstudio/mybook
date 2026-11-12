@@ -177,3 +177,49 @@ input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; bo
 .badge svg { width: 13px; height: 13px; vertical-align: -2px; }
 .book.unavailable { opacity: 0.45; }
 .import-status .bar { margin-top: 8px; }
+
+/* ---------- v3: вёрстка под телефон ---------- */
+
+/* карточка в списке не шире экрана, длинное название — многоточие */
+.book-list > li { min-width: 0; }
+.book { min-width: 0; overflow: hidden; }
+
+/* плеер всегда помещается в экран: обложка подстраивается под оставшуюся высоту */
+.player {
+	height: 100dvh;
+	min-height: 0;
+	overflow: hidden;
+	padding-top: calc(8px + var(--safe-t));
+	padding-bottom: calc(8px + var(--safe-b));
+}
+.cover-wrap {
+	flex: 1 1 auto;
+	min-height: 96px;
+	margin: 4px 0 14px;
+	container-type: size;
+	display: grid;
+	place-items: center;
+}
+.cover {
+	width: min(100cqw, 100cqh, 360px);
+	height: min(100cqw, 100cqh, 360px);
+}
+.meta, .seek, .controls, .tools { flex: none; }
+.meta h2 {
+	font-size: 20px;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+.seek { margin-top: 14px; }
+.controls { margin-top: 12px; }
+.tools { margin-top: 0; padding-top: 16px; }
+.tool { padding: 8px 2px; font-size: 11px; white-space: nowrap; }
+
+@media (max-height: 700px) {
+	.play { width: 64px; height: 64px; }
+	.controls .icon-btn { width: 46px; height: 46px; }
+	.meta h2 { font-size: 18px; -webkit-line-clamp: 1; }
+	.book-left { display: none; }
+}

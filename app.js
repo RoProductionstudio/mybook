@@ -67,6 +67,8 @@ function fmtLong(sec) {
 	return `${m} мин`;
 }
 
+// «Автор(ы): Джеймс Клир» → «Джеймс Клир»
+const cleanAuthor = (a) => String(a || "").replace(/^\s*(автор\(ы\)|авторы|автор|author\(s\)|authors|author|читает)\s*:\s*/i, "").trim();
 const fmtMb = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(1) + " ГБ" : Math.max(1, Math.round(n / 1048576)) + " МБ");
 
 const pluralChapters = (n) => {
@@ -248,6 +250,7 @@ function cacheLibrary() {
 
 function hydrate(meta) {
 	const b = { chapterIndex: 0, position: 0, speed: 1, finished: false, t: 0, ...meta };
+	b.author = cleanAuthor(b.author);
 	const local = readLocalPos(b.id);
 	if (local) Object.assign(b, { chapterIndex: local.c, position: local.p, speed: local.s || 1, finished: !!local.f, t: local.t });
 	b.chapterIndex = Math.min(Math.max(0, b.chapterIndex | 0), b.chapters.length - 1);
@@ -267,6 +270,7 @@ async function refreshLibrary(force = false) {
 		const next = [];
 		for (const r of remote) {
 			const { progress, ...meta } = r;
+			meta.author = cleanAuthor(meta.author);
 			const existing = prev.get(r.id);
 			const b = existing ? Object.assign(existing, meta) : hydrate(meta);
 			b.progressUrl = progress?.url || b.progressUrl || null;
@@ -506,7 +510,7 @@ async function importFiles(fileList) {
 			const tags = await readTags(f).catch(() => ({}));
 			if (!firstTags) firstTags = tags;
 			if (!coverBlob && tags.cover) coverBlob = tags.cover;
-			if (!meta.author && tags.artist) meta.author = tags.artist;
+			if (!meta.author && tags.artist) meta.author = cleanAuthor(tags.artist);
 			const duration = await probeDuration(f);
 			const ext = extOf(f.name);
 			const type = f.type || AUDIO_TYPES[ext] || "application/octet-stream";

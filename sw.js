@@ -2,8 +2,8 @@
 // Network-first, чтобы обновления приходили сразу, а офлайн — из кэша.
 // Запросы к /api/ и к файлам в Vercel Blob не кэшируются здесь
 // (скачанные книги хранятся в IndexedDB).
-const CACHE = "mybook-v4";
-const SHELL = ["./", "./index.html", "./app.js?v=3", "./tags.js", "./vendor/blob-client.js", "./styles.css?v=4", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
+const CACHE = "mybook-v5";
+const SHELL = ["./", "./index.html", "./app.js?v=3", "./tags.js", "./vendor/blob-client.js", "./styles.css?v=5", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (e) => {
 	e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

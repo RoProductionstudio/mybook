@@ -234,3 +234,20 @@ input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; bo
 	.lib-header .btn span { display: none; }
 	.lib-header .btn { padding: 10px; }
 }
+
+/* ---------- v5: плеер на весь экран (iOS standalone считает 100dvh неточно) ---------- */
+.player {
+	position: fixed;
+	inset: 0;
+	height: auto;
+	width: 100%;
+	max-width: 640px;
+	margin: 0 auto;
+	z-index: 5;
+	background: var(--bg);
+}
+.cover {
+	width: min(100cqw, 100cqh, 440px);
+	height: min(100cqw, 100cqh, 440px);
+}
+.tools { padding-bottom: 4px; }
